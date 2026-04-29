@@ -1,5 +1,6 @@
 // server.js
 // npm i playwright ws express
+// npm i playwright ws express dotenv
 // node server.js
 //   - 고객:   http://localhost:3000/
 //   - 상담사: http://localhost:3000/agent
