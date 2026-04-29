@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes" />
+  <title>Co-browsing — 고객</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; background: #1e1e1e; color: #eee; font-family: system-ui, sans-serif; }
+    .toolbar { display: flex; gap: 6px; padding: 8px; background: #2b2b2b; border-bottom: 1px solid #444; position: sticky; top: 0; z-index: 10; flex-wrap: wrap; }
+    .toolbar button { background: #3a3a3a; color: #eee; border: 1px solid #555; padding: 8px 12px; border-radius: 6px; cursor: pointer; font-size: 14px; }
+    .toolbar input[type="text"] { flex: 1; padding: 8px 12px; border-radius: 6px; border: 1px solid #555; background: #1e1e1e; color: #eee; font-size: 14px; min-width: 120px; }
+    .status { padding: 4px 8px; font-size: 12px; color: #999; background: #222; }
+    .status .badge { display: inline-block; padding: 1px 6px; margin-right: 6px; background: #4a7aaf; color: #fff; border-radius: 3px; font-size: 11px; }
+    .status .badge.mobile { background: #b96; }
+    .status .badge.role { background: #5a7; }
+    .stage { width: 100%; overflow: auto; -webkit-overflow-scrolling: touch; background: #000; }
+    canvas { display: block; image-rendering: -webkit-optimize-contrast; image-rendering: crisp-edges; cursor: crosshair; }
+  </style>
+</head>
+<body>
+  <div class="toolbar">
+    <button id="btnBack">◀</button>
+    <button id="btnForward">▶</button>
+    <button id="btnReload">⟳</button>
+    <input type="text" id="urlInput" placeholder="URL 입력 후 Enter" />
+    <button id="btnGo">이동</button>
+  </div>
+  <div class="status" id="status">연결 중…</div>
+  <div class="stage" id="stage"><canvas id="screen"></canvas></div>
+  <script>
+    const ROLE = 'customer';
+    const canvas = document.getElementById('screen');
+    const ctx = canvas.getContext('2d');
+    const urlInput = document.getElementById('urlInput');
+    const statusEl = document.getElementById('status');
+    let ws;
+    let viewportW = 1280, viewportH = 800;
+    let bitmapW = 2560, bitmapH = 1600;
+    let currentProfile = 'pc';
+
+    function detectDevice() {
+      const ua = navigator.userAgent;
+      const isMobUA = /iPhone|iPad|iPod|Android|Mobile/i.test(ua);
+      const isNarrow = window.innerWidth < 768;
+      const hasTouch = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+      const isMobile = isMobUA || (isNarrow && hasTouch);
+      return { device: isMobile ? 'mobile' : 'pc', ua, innerWidth: window.innerWidth, hasTouch };
+    }
+    function setCanvasSize() {
+      canvas.width = bitmapW; canvas.height = bitmapH;
+      canvas.style.width = viewportW + 'px';
+      canvas.style.height = viewportH + 'px';
+    }
+    function updateStatus() {
+      const badge = currentProfile === 'mobile' ? 'mobile' : 'pc';
+      statusEl.innerHTML =
+        `<span class="badge role">${ROLE.toUpperCase()}</span>` +
+        `<span class="badge ${badge}">${badge.toUpperCase()}</span>` +
+        `프로파일: ${viewportW}×${viewportH}, 비트맵 ${bitmapW}×${bitmapH}`;
+    }
+    function connect() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${proto}//${location.host}`);
+      ws.onopen = () => {
+        statusEl.textContent = '연결됨';
+        const info = detectDevice();
+        ws.send(JSON.stringify({ type: 'hello', role: ROLE, ...info }));
+      };
+      ws.onclose = () => { statusEl.textContent = '연결 끊김. 3초 후 재시도…'; setTimeout(connect, 3000); };
+      ws.onerror = () => { statusEl.textContent = '오류 발생'; };
+      ws.onmessage = (ev) => {
+        const msg = JSON.parse(ev.data);
+        if (msg.type === 'frame') {
+          if (msg.width !== bitmapW || msg.height !== bitmapH || msg.viewportWidth !== viewportW || msg.viewportHeight !== viewportH) {
+            bitmapW = msg.width; bitmapH = msg.height;
+            viewportW = msg.viewportWidth; viewportH = msg.viewportHeight;
+            setCanvasSize();
+          }
+          const img = new Image();
+          img.onload = () => ctx.drawImage(img, 0, 0, bitmapW, bitmapH);
+          img.src = 'data:image/jpeg;base64,' + msg.data;
+        } else if (msg.type === 'profile') {
+          currentProfile = msg.name;
+          viewportW = msg.viewportWidth; viewportH = msg.viewportHeight;
+          bitmapW = msg.bitmapWidth; bitmapH = msg.bitmapHeight;
+          setCanvasSize();
+          updateStatus();
+        } else if (msg.type === 'url') {
+          urlInput.value = msg.url;
+        } else if (msg.type === 'warning') {
+          statusEl.textContent = '⚠ ' + msg.message;
+        } else if (msg.type === 'error') {
+          statusEl.textContent = '오류: ' + msg.message;
+        }
+      };
+    }
+    function send(obj) { if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj)); }
+    function toPageCoord(evt) {
+      const rect = canvas.getBoundingClientRect();
+      const x = (evt.clientX - rect.left) * (viewportW / rect.width);
+      const y = (evt.clientY - rect.top) * (viewportH / rect.height);
+      return { x, y };
+    }
+    canvas.addEventListener('click', (e) => { const { x, y } = toPageCoord(e); send({ type: 'click', x, y }); });
+    let lastMove = 0;
+    canvas.addEventListener('mousemove', (e) => {
+      const now = Date.now(); if (now - lastMove < 50) return; lastMove = now;
+      const { x, y } = toPageCoord(e); send({ type: 'mousemove', x, y });
+    });
+    canvas.addEventListener('wheel', (e) => { e.preventDefault(); send({ type: 'scroll', deltaX: e.deltaX, deltaY: e.deltaY }); }, { passive: false });
+    document.addEventListener('keydown', (e) => {
+      if (document.activeElement === urlInput) return;
+      if (e.key.length === 1 && !e.ctrlKey && !e.metaKey) send({ type: 'type', text: e.key });
+      else send({ type: 'key', key: e.key });
+      e.preventDefault();
+    });
+    function navigate() { const url = urlInput.value.trim(); if (url) send({ type: 'navigate', url }); }
+    document.getElementById('btnGo').addEventListener('click', navigate);
+    urlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') navigate(); });
+    document.getElementById('btnBack').addEventListener('click', () => send({ type: 'back' }));
+    document.getElementById('btnForward').addEventListener('click', () => send({ type: 'forward' }));
+    document.getElementById('btnReload').addEventListener('click', () => send({ type: 'reload' }));
+    setCanvasSize();
+    connect();
+  </script>
+</body>
+</html>

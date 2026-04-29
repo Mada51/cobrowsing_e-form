@@ -1,0 +1,11 @@
+node_modules/
+package-lock.json
+.env
+.env.local
+*.log
+.vscode/
+.DS_Store
+test-results/
+playwright-report/
+server.js.backup
+_old_backup/
